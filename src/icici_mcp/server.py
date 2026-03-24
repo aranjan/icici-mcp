@@ -7,7 +7,7 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from icici_mcp.auth import automated_login, get_authenticated_breeze, get_login_url, load_credentials
+from icici_mcp.auth import get_authenticated_breeze, load_credentials
 
 mcp = FastMCP("icici")
 
