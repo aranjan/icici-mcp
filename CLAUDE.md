@@ -18,10 +18,11 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
 
 - Built with **FastMCP** (from the `mcp` Python package)
 - Runs as a **stdio** server (local, not hosted)
-- Auto-authenticates using TOTP via `pyotp`
+- Auto-authenticates using **Playwright headless Chromium** + TOTP via `pyotp`
+- ICICI Direct blocks plain HTTP login automation — Playwright is required to render the JS login page
 - Token cached at `~/.icici_direct_token.json` (expires daily)
 - Uses **breeze-connect** SDK for ICICI Direct API communication
-- Login flow involves RSA-encrypted password submission + TOTP, then Breeze session generation
+- Users must run `playwright install chromium` once after pip install
 
 ## Project Structure
 
@@ -48,11 +49,13 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
     workflows/ci.yml  # CI: ruff lint, syntax, imports, tests across Python 3.10-3.13
     ISSUE_TEMPLATE/   # Bug report + feature request templates
     pull_request_template.md
+  run.sh              # Wrapper script for Claude Desktop (sets cwd)
+  logo.svg
 ```
 
 ## Key Files
 
-- **src/icici_mcp/auth.py** -- all authentication logic lives here. Functions are parameterized (no module-level globals). `get_authenticated_breeze()` tries cached token first, then manual session token, then auto-login if TOTP available. Login flow uses RSA encryption for password + TOTP code submission.
+- **src/icici_mcp/auth.py** -- all authentication logic. `get_authenticated_breeze()` tries cached token -> manual session token -> auto-login via Playwright. `automated_login()` launches headless Chromium, fills credentials, submits TOTP, and intercepts the redirect to capture the apisession token.
 - **src/icici_mcp/server.py** -- all 14 tools. `_breeze()` helper validates token with `breeze.get_customer_details()` and auto-retries on auth failure. Tools use `Annotated` type hints for parameter descriptions and `ToolAnnotations` for read-only/write/destructive hints.
 - **src/icici_mcp/cli.py** -- `login()` and `status()` for standalone CLI use.
 
@@ -90,8 +93,10 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
 
 - **Project:** ~/icici-mcp/
 - **Venv:** ~/icici-mcp/venv/ (Python 3.14)
-- **Installed editable:** `pip install -e .`
+- **Installed editable:** `pip install -e .` then `playwright install chromium`
 - **Entry points:** ~/icici-mcp/venv/bin/icici-mcp, ~/icici-mcp/venv/bin/icici-mcp-login
+- **Claude Desktop config:** Uses `run.sh` wrapper (not direct binary) because breeze_connect SDK creates a `logs/` directory in cwd, which fails in Claude Desktop's read-only launch directory
+- **Claude Desktop command:** `/Users/arn/icici-mcp/run.sh`
 
 ## Build and Publish
 
@@ -123,7 +128,20 @@ cd ~/icici-mcp && ./venv/bin/pytest tests/ -v
 - **Exchange support:** Currently supports NSE and NFO only. BSE support is possible but not tested.
 - **Breeze API string params quirk:** Many Breeze API parameters that logically should be integers (like quantity, price, strike_price) must be passed as strings. The tools handle this conversion internally.
 - **Session tokens expire daily.** With ICICI_TOTP_SECRET set, the server auto-refreshes. Without it, run `icici-mcp-login` manually each morning or set ICICI_SESSION_TOKEN.
-- **Automated login flow** depends on ICICI Direct's web login page structure. If ICICI changes their login page HTML, the automated login may break and require updates to `auth.py`.
+- **Automated login via Playwright** depends on ICICI Direct's web login page structure. If ICICI changes their login page HTML/JS, the automated login may break and require updates to `auth.py`.
+- **breeze_connect logs quirk:** The SDK creates a `logs/` directory in the current working directory on import. Claude Desktop launches processes in a read-only directory, so `run.sh` is needed to set cwd first.
+- **Playwright dependency:** Adds ~90MB Chromium download on first setup (`playwright install chromium`). Required for automated login only — manual session token flow works without it.
+
+## Distribution Status
+
+| Platform | Status |
+|----------|--------|
+| PyPI | Live (v0.1.3) |
+| GitHub | Public, github.com/aranjan/icici-mcp |
+| awesome-mcp-servers | PR #3899 |
+| Official MCP servers | PR #3706 |
+| Glama | Ready to submit |
+| Smithery | Ready to submit |
 
 ## Roadmap
 
