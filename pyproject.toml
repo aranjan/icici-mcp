@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "icici-mcp"
+version = "0.1.0"
+description = "MCP server for ICICI Direct — trade Indian stocks via any MCP-compatible AI assistant"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Amit Ranjan", email = "mail2amit.ranjan@gmail.com" },
+]
+keywords = ["mcp", "icici", "breeze", "trading", "stocks", "india"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "breeze-connect>=1.0.0",
+    "requests>=2.28.0",
+    "pyotp>=2.8.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.scripts]
+icici-mcp = "icici_mcp.server:main"
+icici-mcp-login = "icici_mcp.cli:login"
+
+[project.urls]
+Homepage = "https://github.com/aranjan/icici-mcp"
+Issues = "https://github.com/aranjan/icici-mcp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/icici_mcp"]

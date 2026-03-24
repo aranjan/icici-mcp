@@ -1,0 +1,43 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+
+configSchema:
+  type: object
+  required:
+    - iciciApiKey
+    - iciciApiSecret
+    - iciciUserId
+    - iciciPassword
+  properties:
+    iciciApiKey:
+      type: string
+      title: "ICICI API Key"
+      description: "Your ICICI Direct API key from api.icicidirect.com"
+    iciciApiSecret:
+      type: string
+      title: "ICICI API Secret"
+      description: "Your ICICI Direct API secret from api.icicidirect.com"
+    iciciUserId:
+      type: string
+      title: "ICICI Direct User ID"
+      description: "Your ICICI Direct client ID"
+    iciciPassword:
+      type: string
+      title: "ICICI Direct Password"
+      description: "Your ICICI Direct login password"
+    iciciTotpSecret:
+      type: string
+      title: "TOTP Secret (Optional)"
+      description: "Base32 TOTP seed for fully automated login. Get this by switching to an external authenticator app in ICICI Direct security settings. Without this, you must run icici-mcp-login manually each day or set ICICI_SESSION_TOKEN."
+      default: ""
+    iciciSessionToken:
+      type: string
+      title: "Session Token (Optional)"
+      description: "Manual session token from ICICI Direct API login page. Use this if you cannot set up TOTP."
+      default: ""
+
+commandFunction:
+  |-
+  (config) => ({ command: 'icici-mcp', args: [], env: { ICICI_API_KEY: config.iciciApiKey, ICICI_API_SECRET: config.iciciApiSecret, ICICI_USER_ID: config.iciciUserId, ICICI_PASSWORD: config.iciciPassword, ICICI_TOTP_SECRET: config.iciciTotpSecret || '', ICICI_SESSION_TOKEN: config.iciciSessionToken || '' } })
