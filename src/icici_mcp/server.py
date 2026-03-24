@@ -7,7 +7,7 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from icici_mcp.auth import automated_login, get_authenticated_breeze, load_credentials
+from icici_mcp.auth import get_authenticated_breeze, get_login_url, load_credentials
 
 mcp = FastMCP("icici")
 
@@ -18,35 +18,9 @@ DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorl
 
 
 def _breeze():
-    """Return an authenticated BreezeConnect instance. Auto-refreshes token on auth failure."""
+    """Return an authenticated BreezeConnect instance."""
     creds = load_credentials()
-    breeze = get_authenticated_breeze(creds)
-
-    # Validate the token with a lightweight call
-    try:
-        breeze.get_customer_details()
-    except Exception:
-        # Token is stale — force a fresh login
-        if creds["totp_secret"]:
-            session_token = automated_login(
-                creds["api_key"], creds["api_secret"],
-                creds["user_id"], creds["password"], creds["totp_secret"],
-            )
-            breeze.generate_session(
-                api_secret=creds["api_secret"], session_token=session_token
-            )
-        elif creds["session_token"]:
-            breeze.generate_session(
-                api_secret=creds["api_secret"],
-                session_token=creds["session_token"],
-            )
-        else:
-            raise RuntimeError(
-                "Token expired. Set ICICI_TOTP_SECRET for auto-login or "
-                "update ICICI_SESSION_TOKEN. Or run 'icici-mcp-login'."
-            )
-
-    return breeze
+    return get_authenticated_breeze(creds)
 
 
 def _iso_date(date_str: str) -> str:
@@ -66,18 +40,22 @@ def _past_iso(days: int = 30) -> str:
 
 @mcp.tool(annotations=WRITE)
 def icici_login() -> str:
-    """Authenticate with ICICI Direct. Auto-generates TOTP and logs in. Call this if other tools fail with auth errors."""
+    """Authenticate with ICICI Direct using a session token. If no token is cached, returns the login URL to get one."""
     creds = load_credentials()
-    if not creds["totp_secret"] and not creds["session_token"]:
-        return "Error: ICICI_TOTP_SECRET or ICICI_SESSION_TOKEN is not set. Cannot auto-login."
     if creds["session_token"]:
-        breeze = get_authenticated_breeze(creds)
-        return "Login successful using manual session token."
-    automated_login(
-        creds["api_key"], creds["api_secret"],
-        creds["user_id"], creds["password"], creds["totp_secret"],
-    )
-    return "Login successful. Session token refreshed."
+        get_authenticated_breeze(creds)
+        return "Login successful using session token."
+    cached = get_authenticated_breeze.__wrapped__ if hasattr(get_authenticated_breeze, '__wrapped__') else None
+    try:
+        get_authenticated_breeze(creds)
+        return "Login successful using cached session token."
+    except RuntimeError:
+        login_url = get_login_url(creds["api_key"])
+        return (
+            f"No valid session token. Please log in at:\n{login_url}\n\n"
+            "After login, copy the 'apisession' value from the redirect URL "
+            "and set it as ICICI_SESSION_TOKEN, then try again."
+        )
 
 
 @mcp.tool(annotations=READ_ONLY)
