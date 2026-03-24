@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/aranjan/icici-mcp/main/logo.svg" alt="icici-mcp logo" width="128" height="128">
+</p>
+
 <h1 align="center">icici-mcp</h1>
 
 <p align="center">
@@ -82,7 +86,10 @@ Works with any MCP-compatible client, including:
 
 ```bash
 pip install icici-mcp
+playwright install chromium
 ```
+
+> **Note:** The `playwright install chromium` step is required once for automated TOTP login. It downloads a headless Chromium browser (~90MB) used to log in to ICICI Direct automatically.
 
 ### 2. Get your credentials
 

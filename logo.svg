@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512">
+      <stop offset="0%" stop-color="#FFF7ED"/>
+      <stop offset="100%" stop-color="#FFE4D6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect x="40" y="40" width="432" height="432" rx="100" fill="url(#bg)" stroke="#DB620A" stroke-width="3"/>
+
+  <!-- Core blocks (3-in-1 concept) -->
+  <rect x="140" y="150" width="60" height="60" rx="12" fill="#DB620A"/>
+  <rect x="220" y="150" width="60" height="60" rx="12" fill="#1E293B"/>
+  <rect x="300" y="150" width="60" height="60" rx="12" fill="#DB620A"/>
+
+  <!-- Connection lines -->
+  <line x1="200" y1="180" x2="220" y2="180" stroke="#1E293B" stroke-width="6"/>
+  <line x1="280" y1="180" x2="300" y2="180" stroke="#1E293B" stroke-width="6"/>
+
+  <!-- Growth arrow -->
+  <polyline points="150,300 220,240 280,270 350,200" 
+            fill="none" 
+            stroke="#DB620A" 
+            stroke-width="12" 
+            stroke-linecap="round" 
+            stroke-linejoin="round"/>
+
+  <!-- Arrow head -->
+  <polygon points="350,200 340,215 365,210" fill="#DB620A"/>
+
+  <!-- Subtle lock -->
+  <rect x="300" y="300" width="70" height="60" rx="12" fill="#1E293B"/>
+  <path d="M315 300V280C315 260 330 245 345 245C360 245 375 260 375 280V300" 
+        stroke="#1E293B" stroke-width="10" fill="none"/>
+  <circle cx="345" cy="330" r="8" fill="#FFF7ED"/>
+</svg>
