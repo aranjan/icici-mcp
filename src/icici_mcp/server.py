@@ -7,7 +7,7 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from icici_mcp.auth import get_authenticated_breeze, get_login_url, load_credentials
+from icici_mcp.auth import automated_login, get_authenticated_breeze, get_login_url, load_credentials
 
 mcp = FastMCP("icici")
 
@@ -40,22 +40,13 @@ def _past_iso(days: int = 30) -> str:
 
 @mcp.tool(annotations=WRITE)
 def icici_login() -> str:
-    """Authenticate with ICICI Direct using a session token. If no token is cached, returns the login URL to get one."""
+    """Authenticate with ICICI Direct. Auto-logs in with TOTP if available, or uses manual session token. Call this if other tools fail with auth errors."""
     creds = load_credentials()
-    if creds["session_token"]:
-        get_authenticated_breeze(creds)
-        return "Login successful using session token."
-    cached = get_authenticated_breeze.__wrapped__ if hasattr(get_authenticated_breeze, '__wrapped__') else None
     try:
         get_authenticated_breeze(creds)
-        return "Login successful using cached session token."
-    except RuntimeError:
-        login_url = get_login_url(creds["api_key"])
-        return (
-            f"No valid session token. Please log in at:\n{login_url}\n\n"
-            "After login, copy the 'apisession' value from the redirect URL "
-            "and set it as ICICI_SESSION_TOKEN, then try again."
-        )
+        return "Login successful. Session token cached for today."
+    except RuntimeError as e:
+        return f"Login failed: {e}"
 
 
 @mcp.tool(annotations=READ_ONLY)
