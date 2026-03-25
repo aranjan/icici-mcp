@@ -160,8 +160,19 @@ def automated_login(
 
         return apisession
 
-    # Run the async login
-    session_token = asyncio.run(_login())
+    # Run the async login — handle both fresh and existing event loops
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already in an async context (e.g., MCP server) — use nest_asyncio or new thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            session_token = pool.submit(asyncio.run, _login()).result()
+    else:
+        session_token = asyncio.run(_login())
 
     # Cache the token
     save_session_token(session_token)
