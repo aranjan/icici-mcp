@@ -24,6 +24,26 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
 - Uses **breeze-connect** SDK for ICICI Direct API communication
 - Users must run `playwright install chromium` once after pip install
 
+## Broader System Context
+
+icici-mcp is part of a multi-broker trading system:
+
+```
+Claude Desktop
+  ├── kite-mcp          → Zerodha portfolio + orders (auto TOTP)
+  ├── zerodha-official   → Free quotes for any NSE stock (browser OAuth)
+  ├── icici-mcp         → ICICI Direct portfolio + orders (Playwright TOTP)
+  ├── finance MCP       → Technical analysis (RSI, MACD, Bollinger, MA)
+  └── Slack MCP         → Post to #kite-portfolio
+```
+
+**Related projects:**
+- `~/kite-mcp/` — Zerodha Kite MCP server (separate repo)
+- `~/finance-mcp-wrapper.py` — Async wrapper for finance-mcp-server
+- `~/trading-agent-prompt.md` — Scheduled task prompts for daily/EOD/weekly reports
+- `~/test_claude_config.py` — Validates Claude Desktop config
+- `~/improvements-26-march.md` — Planned improvements backlog
+
 ## Project Structure
 
 ```
@@ -45,25 +65,26 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
   SECURITY.md
   LICENSE             # MIT
   README.md
+  logo.svg
+  run.sh              # Wrapper script for Claude Desktop (sets cwd for breeze_connect logs)
   .github/
     workflows/ci.yml  # CI: ruff lint, syntax, imports, tests across Python 3.10-3.13
     ISSUE_TEMPLATE/   # Bug report + feature request templates
     pull_request_template.md
-  run.sh              # Wrapper script for Claude Desktop (sets cwd)
-  logo.svg
 ```
 
 ## Key Files
 
-- **src/icici_mcp/auth.py** -- all authentication logic. `get_authenticated_breeze()` tries cached token -> manual session token -> auto-login via Playwright. `automated_login()` launches headless Chromium, fills credentials, submits TOTP, and intercepts the redirect to capture the apisession token.
-- **src/icici_mcp/server.py** -- all 14 tools. `_breeze()` helper validates token with `breeze.get_customer_details()` and auto-retries on auth failure. Tools use `Annotated` type hints for parameter descriptions and `ToolAnnotations` for read-only/write/destructive hints.
-- **src/icici_mcp/cli.py** -- `login()` and `status()` for standalone CLI use.
+- **src/icici_mcp/auth.py** -- all authentication logic. `get_authenticated_breeze()` tries cached token -> manual session token -> auto-login via Playwright. `automated_login()` launches headless Chromium, fills credentials, submits TOTP, intercepts the redirect to capture the apisession token. Uses `concurrent.futures.ThreadPoolExecutor` to handle asyncio.run() when called from an existing event loop (co-work compatibility fix).
+- **src/icici_mcp/server.py** -- all 14 tools. `_breeze()` helper returns authenticated instance. Tools use `Annotated` type hints for parameter descriptions and `ToolAnnotations` for read-only/write/destructive hints.
+- **src/icici_mcp/cli.py** -- `login()` opens browser, prompts for apisession token, caches it. `status()` checks cached token.
+- **run.sh** -- wrapper script that `cd`s to project directory before launching the server. Required because breeze_connect SDK creates `logs/` directory in cwd on import, which fails in Claude Desktop's read-only launch directory.
 
 ## 14 MCP Tools
 
 | Tool | Annotation | Description |
 |------|-----------|-------------|
-| icici_login | WRITE | Auto-authenticate with TOTP |
+| icici_login | WRITE | Auto-authenticate with TOTP via Playwright |
 | get_holdings | READ_ONLY | Portfolio holdings with P&L |
 | get_demat_holdings | READ_ONLY | All demat holdings |
 | get_positions | READ_ONLY | Current open positions |
@@ -78,16 +99,32 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
 | cancel_order | DESTRUCTIVE | Cancel pending orders |
 | square_off | WRITE | Square off positions |
 
+## ICICI Stock Code Mapping
+
+ICICI Direct uses different stock codes than NSE. Key mappings:
+
+| ICICI Code | NSE Code | Company |
+|------------|----------|---------|
+| TATMOT | TATAMOTORS | Tata Motors |
+| HDFBAN | HDFCBANK | HDFC Bank |
+| STABAN | SBIN | State Bank of India |
+| TATCOV | TATACONSUM | Tata Consumer |
+| POWFIN | PFC | Power Finance Corp |
+| ONE97 | PAYTM | Paytm |
+| TATCAP | TATACAPITAL | Tata Capital |
+
+For finance MCP technical analysis, append `.NS` to NSE codes (e.g., `RELIANCE.NS`).
+
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| ICICI_API_KEY | Yes | ICICI Direct API key |
-| ICICI_API_SECRET | Yes | ICICI Direct API secret |
-| ICICI_USER_ID | Yes | ICICI Direct client ID |
+| ICICI_API_KEY | Yes | Breeze API key (contains special chars @, ~) |
+| ICICI_API_SECRET | Yes | Breeze API secret |
+| ICICI_USER_ID | Yes | ICICI Direct client ID (e.g., AMITRV8P) |
 | ICICI_PASSWORD | Yes | ICICI Direct login password |
-| ICICI_TOTP_SECRET | No | Base32 TOTP seed for auto-login |
-| ICICI_SESSION_TOKEN | No | Manual session token override |
+| ICICI_TOTP_SECRET | No | Base32 TOTP seed for auto-login via Playwright |
+| ICICI_SESSION_TOKEN | No | Manual session token override (bypass Playwright) |
 
 ## Local Setup
 
@@ -95,8 +132,24 @@ User (natural language) -> AI Assistant -> icici-mcp (MCP/stdio) -> ICICI Direct
 - **Venv:** ~/icici-mcp/venv/ (Python 3.14)
 - **Installed editable:** `pip install -e .` then `playwright install chromium`
 - **Entry points:** ~/icici-mcp/venv/bin/icici-mcp, ~/icici-mcp/venv/bin/icici-mcp-login
-- **Claude Desktop config:** Uses `run.sh` wrapper (not direct binary) because breeze_connect SDK creates a `logs/` directory in cwd, which fails in Claude Desktop's read-only launch directory
+- **Claude Desktop config:** Uses `run.sh` wrapper (not direct binary)
 - **Claude Desktop command:** `/Users/arn/icici-mcp/run.sh`
+
+## Credentials Storage
+
+- ICICI credentials: environment variables in ~/.bashrc and Claude Desktop config
+- Session token: ~/.icici_direct_token.json (auto-refreshed daily via Playwright)
+- PyPI recovery codes: ~/.config/pypi/recovery_codes.txt (chmod 600)
+
+## Pre-push Checklist
+
+Always run before pushing:
+```bash
+cd ~/icici-mcp
+./venv/bin/ruff check src/          # Lint
+./venv/bin/pytest tests/ -v         # Tests
+python3 ~/test_claude_config.py     # Config validation (if config changed)
+```
 
 ## Build and Publish
 
@@ -110,8 +163,9 @@ cd ~/icici-mcp && rm -rf dist/ && ./venv/bin/python -m build
 # Remember to:
 # 1. Bump version in pyproject.toml and src/icici_mcp/__init__.py
 # 2. Update CHANGELOG.md
-# 3. git commit and push
-# 4. Create GitHub release: gh release create vX.Y.Z
+# 3. Run ruff + pytest before committing
+# 4. git commit and push
+# 5. Create GitHub release: gh release create vX.Y.Z
 ```
 
 ## Testing
@@ -125,12 +179,24 @@ cd ~/icici-mcp && ./venv/bin/pytest tests/ -v
 ## Known Limitations
 
 - **ICICI Direct API rate limits:** 100 requests per minute, 5000 requests per day. High-frequency strategies are not supported.
-- **Exchange support:** Currently supports NSE and NFO only. BSE support is possible but not tested.
-- **Breeze API string params quirk:** Many Breeze API parameters that logically should be integers (like quantity, price, strike_price) must be passed as strings. The tools handle this conversion internally.
-- **Session tokens expire daily.** With ICICI_TOTP_SECRET set, the server auto-refreshes. Without it, run `icici-mcp-login` manually each morning or set ICICI_SESSION_TOKEN.
-- **Automated login via Playwright** depends on ICICI Direct's web login page structure. If ICICI changes their login page HTML/JS, the automated login may break and require updates to `auth.py`.
-- **breeze_connect logs quirk:** The SDK creates a `logs/` directory in the current working directory on import. Claude Desktop launches processes in a read-only directory, so `run.sh` is needed to set cwd first.
-- **Playwright dependency:** Adds ~90MB Chromium download on first setup (`playwright install chromium`). Required for automated login only — manual session token flow works without it.
+- **Exchange support:** Currently supports NSE and NFO only. BSE/MCX parameters accepted but no data available.
+- **Breeze API string params quirk:** Many parameters (quantity, price, strike_price) must be passed as strings. Tools handle this conversion internally.
+- **Session tokens expire daily.** With ICICI_TOTP_SECRET set, the server auto-refreshes via Playwright. Without it, run `icici-mcp-login` or set ICICI_SESSION_TOKEN.
+- **Automated login via Playwright** depends on ICICI Direct's web login page structure. If ICICI changes their login page HTML/JS, the automated login may break.
+- **breeze_connect logs quirk:** The SDK creates a `logs/` directory in cwd on import. Claude Desktop launches in read-only directory — `run.sh` wrapper fixes this.
+- **Playwright dependency:** Adds ~90MB Chromium download on first setup. Required for automated login only.
+- **asyncio.run() in event loop:** Co-work runs in an async context. The auth module uses ThreadPoolExecutor as a workaround. May still fail intermittently.
+- **Static IP requirement from April 1, 2026:** SEBI mandates static IP for API trading. Current dynamic IP may stop working.
+- **Token files currently world-readable** -- needs chmod 600 fix (see improvements-26-march.md)
+- **Missing order validation** -- no quantity/price checks (planned fix)
+- **No logging** -- errors are silent (planned fix)
+- **Silent exception in automated_login()** -- `except Exception: pass` hides errors (planned fix)
+
+## Known Issues with Scheduled Tasks
+
+- **asyncio.run() conflict** -- co-work environment has a running event loop. Fixed with ThreadPoolExecutor workaround but may still fail intermittently.
+- **Slack channel search intermittent** -- hardcode channel name "kite-portfolio" in prompts.
+- **ICICI login may timeout** -- Playwright browser launch takes 5-10 seconds. If co-work has a short timeout, login may fail.
 
 ## Distribution Status
 
@@ -143,10 +209,23 @@ cd ~/icici-mcp && ./venv/bin/pytest tests/ -v
 | Glama | Ready to submit |
 | Smithery | Ready to submit |
 
+## Scheduled Tasks (Co-work)
+
+Three scheduled tasks use this MCP along with kite-mcp and finance MCP:
+1. **Daily trading agent** -- Weekdays 9:20 AM IST -- full portfolio report
+2. **EOD trading review** -- Weekdays 3:35 PM IST -- market close review
+3. **Weekly portfolio digest** -- Fridays 4:00 PM IST -- week in review
+
+Prompts saved at: `~/trading-agent-prompt.md`
+
 ## Roadmap
 
 - Basket orders
 - Mutual fund tools
 - IPO application tools
-- Portfolio analytics
+- Portfolio analytics / diversification tool
 - Multi-account support
+- Order validation (quantity, price, product checks)
+- Logging to ~/.icici-mcp.log
+- Trade audit log
+- Replace ThreadPoolExecutor with nest_asyncio for cleaner async handling
