@@ -244,22 +244,34 @@ def get_authenticated_breeze(creds: dict) -> BreezeConnect:
     """
     breeze = BreezeConnect(api_key=creds["api_key"])
 
-    # Try cached token first
+    # Try cached token first — validate it actually works
     cached = get_cached_token()
     if cached:
-        breeze.generate_session(
-            api_secret=creds["api_secret"], session_token=cached
-        )
-        return breeze
+        try:
+            breeze.generate_session(
+                api_secret=creds["api_secret"], session_token=cached
+            )
+            # Validate with a lightweight call
+            breeze.get_customer_details()
+            return breeze
+        except Exception:
+            # Cached token is invalid/expired — fall through to other methods
+            print("Cached ICICI token expired, attempting re-login...", file=sys.stderr)
+            breeze = BreezeConnect(api_key=creds["api_key"])
 
     # Try manual session token override
     if creds["session_token"]:
-        breeze.generate_session(
-            api_secret=creds["api_secret"],
-            session_token=creds["session_token"],
-        )
-        save_session_token(creds["session_token"])
-        return breeze
+        try:
+            breeze.generate_session(
+                api_secret=creds["api_secret"],
+                session_token=creds["session_token"],
+            )
+            breeze.get_customer_details()
+            save_session_token(creds["session_token"])
+            return breeze
+        except Exception:
+            print("Manual session token expired, attempting auto-login...", file=sys.stderr)
+            breeze = BreezeConnect(api_key=creds["api_key"])
 
     # Try auto-login with TOTP via headless browser
     if creds["totp_secret"]:
