@@ -81,6 +81,7 @@ def save_session_token(session_token: str) -> None:
             }
         )
     )
+    os.chmod(TOKEN_FILE, 0o600)
 
 
 def automated_login(
@@ -99,62 +100,114 @@ def automated_login(
     """
 
     async def _login() -> str:
-        from playwright.async_api import async_playwright
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as e:
+            raise RuntimeError(
+                "Playwright is not installed. Run: pip install playwright && playwright install chromium"
+            ) from e
 
         login_url = get_login_url(api_key)
         apisession = None
+        browser = None
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
 
-            # Intercept requests to capture apisession from redirect URL
-            def on_request(request):
-                nonlocal apisession
-                url = request.url
-                if "apisession" in url:
-                    parsed = urlparse(url)
-                    params = parse_qs(parsed.query)
-                    token = params.get("apisession", [None])[0]
-                    if token:
-                        apisession = token
+                # Intercept requests to capture apisession from redirect URL
+                def on_request(request):
+                    nonlocal apisession
+                    try:
+                        url = request.url
+                        if "apisession" in url:
+                            parsed = urlparse(url)
+                            params = parse_qs(parsed.query)
+                            token = params.get("apisession", [None])[0]
+                            if token:
+                                apisession = token
+                    except Exception:
+                        pass  # Don't crash on request parsing errors
 
-            page.on("request", on_request)
+                page.on("request", on_request)
 
-            # Step 1: Navigate to login page
-            await page.goto(login_url, wait_until="networkidle")
+                # Step 1: Navigate to login page (30s timeout)
+                await page.goto(login_url, wait_until="networkidle", timeout=30000)
 
-            # Step 2: Fill credentials
-            await page.fill("#txtuid", user_id)
-            await page.fill("#txtPass", password)
-            await page.check("#chkssTnc")
+                # Step 2: Fill credentials
+                uid_field = await page.query_selector("#txtuid")
+                if not uid_field:
+                    raise RuntimeError(
+                        "Login page structure changed — #txtuid field not found. "
+                        "ICICI Direct may have updated their login page."
+                    )
+                await page.fill("#txtuid", user_id)
+                await page.fill("#txtPass", password)
+                await page.check("#chkssTnc")
 
-            # Step 3: Click login
-            await page.click("#btnSubmit")
-            await page.wait_for_timeout(3000)
+                # Step 3: Click login
+                await page.click("#btnSubmit")
+                await page.wait_for_timeout(3000)
 
-            # Step 4: Enter TOTP
-            totp_code = pyotp.TOTP(totp_secret).now()
-            otp_inputs = await page.query_selector_all("input[tg-nm=otp]")
+                # Step 4: Enter TOTP
+                totp_code = pyotp.TOTP(totp_secret).now()
+                otp_inputs = await page.query_selector_all("input[tg-nm=otp]")
 
-            if len(otp_inputs) == 6:
-                for i, digit in enumerate(totp_code):
-                    await otp_inputs[i].fill(digit)
-            elif otp_inputs:
-                await otp_inputs[0].fill(totp_code)
+                if not otp_inputs:
+                    # Check if login failed (wrong credentials)
+                    error_el = await page.query_selector(".text-danger, #errmsg, .error")
+                    if error_el:
+                        error_text = await error_el.inner_text()
+                        raise RuntimeError(f"Login failed: {error_text.strip()}")
+                    raise RuntimeError(
+                        "OTP input fields not found after login. "
+                        "Credentials may be wrong or login page changed."
+                    )
 
-            # Step 5: Submit OTP
-            try:
-                await page.evaluate("submitotp()")
-            except Exception:
-                pass
-            await page.wait_for_timeout(5000)
+                if len(otp_inputs) == 6:
+                    for i, digit in enumerate(totp_code):
+                        await otp_inputs[i].fill(digit)
+                else:
+                    await otp_inputs[0].fill(totp_code)
 
-            await browser.close()
+                # Step 5: Submit OTP
+                try:
+                    await page.evaluate("submitotp()")
+                except Exception as e:
+                    print(f"Warning: submitotp() JS call failed: {e}", file=sys.stderr)
+                    # Try clicking a submit button as fallback
+                    submit_btn = await page.query_selector("#btnOTP, button[type=submit]")
+                    if submit_btn:
+                        await submit_btn.click()
+
+                await page.wait_for_timeout(5000)
+
+                await browser.close()
+                browser = None
+
+        except RuntimeError:
+            raise  # Re-raise our own errors
+        except Exception as e:
+            raise RuntimeError(
+                f"Automated login failed: {type(e).__name__}: {e}\n"
+                "Possible causes:\n"
+                "- Chromium not installed: run 'playwright install chromium'\n"
+                "- Network issue: check internet connection\n"
+                "- ICICI login page changed: try 'icici-mcp-login' manually\n"
+                "- TOTP expired: check ICICI_TOTP_SECRET is correct"
+            ) from e
+        finally:
+            if browser:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
         if not apisession:
             raise RuntimeError(
-                "Could not extract apisession after automated login. "
+                "Could not extract apisession after login completed. "
+                "The redirect URL may not contain the token. "
                 "Try running 'icici-mcp-login' to log in manually."
             )
 

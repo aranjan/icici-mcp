@@ -200,16 +200,37 @@ def place_order(
     disclosed_quantity: Annotated[str, "Disclosed quantity. Use '0' for full disclosure."] = "0",
 ) -> str:
     """Place a buy or sell order. Returns order details on success."""
+    # Input validation
+    if quantity <= 0:
+        return json.dumps({"Status": 400, "Error": "Quantity must be greater than 0"})
+    if action.lower() not in ("buy", "sell"):
+        return json.dumps({"Status": 400, "Error": f"Invalid action: {action}. Must be buy or sell"})
+    if product.lower() not in ("cash", "futures", "options", "margin", "btst"):
+        return json.dumps({"Status": 400, "Error": f"Invalid product: {product}. Must be cash, futures, options, margin, or btst"})
+    if order_type.lower() not in ("market", "limit"):
+        return json.dumps({"Status": 400, "Error": f"Invalid order_type: {order_type}. Must be market or limit"})
+    if order_type.lower() == "limit":
+        try:
+            p = float(price)
+            if p <= 0:
+                return json.dumps({"Status": 400, "Error": "Limit orders require a price > 0"})
+        except ValueError:
+            return json.dumps({"Status": 400, "Error": f"Invalid price: {price}. Must be a number"})
+    if product.lower() == "options" and right.lower() not in ("call", "put"):
+        return json.dumps({"Status": 400, "Error": "Options orders require right to be 'call' or 'put'"})
+    if validity.lower() not in ("day", "ioc"):
+        return json.dumps({"Status": 400, "Error": f"Invalid validity: {validity}. Must be day or ioc"})
+
     breeze = _breeze()
     result = breeze.place_order(
         stock_code=stock_code,
         exchange_code=exchange_code,
         product=product,
-        action=action,
-        order_type=order_type,
+        action=action.lower(),
+        order_type=order_type.lower(),
         quantity=str(quantity),
         price=price,
-        validity=validity,
+        validity=validity.lower(),
         stoploss=stoploss,
         disclosed_quantity=disclosed_quantity,
         validity_date=_today_iso(),
