@@ -134,6 +134,8 @@ For finance MCP technical analysis, append `.NS` to NSE codes (e.g., `RELIANCE.N
 - **Entry points:** ~/icici-mcp/venv/bin/icici-mcp, ~/icici-mcp/venv/bin/icici-mcp-login
 - **Claude Desktop config:** Uses `run.sh` wrapper (not direct binary)
 - **Claude Desktop command:** `/Users/arn/icici-mcp/run.sh`
+- **Log file:** ~/.icici-mcp.log
+- **Audit log:** ~/.trading-audit.log
 
 ## Credentials Storage
 
@@ -174,7 +176,7 @@ cd ~/icici-mcp && rm -rf dist/ && ./venv/bin/python -m build
 cd ~/icici-mcp && ./venv/bin/pytest tests/ -v
 ```
 
-13 tests covering auth, server tool registration, and CLI.
+23 tests covering auth, server tool registration, order validation, and CLI.
 
 ## Known Limitations
 
@@ -187,10 +189,9 @@ cd ~/icici-mcp && ./venv/bin/pytest tests/ -v
 - **Playwright dependency:** Adds ~90MB Chromium download on first setup. Required for automated login only.
 - **asyncio.run() in event loop:** Co-work runs in an async context. The auth module uses ThreadPoolExecutor as a workaround. May still fail intermittently.
 - **Static IP requirement from April 1, 2026:** SEBI mandates static IP for API trading. Current dynamic IP may stop working.
-- **Token files currently world-readable** -- needs chmod 600 fix (see improvements-26-march.md)
-- **Missing order validation** -- no quantity/price checks (planned fix)
-- **No logging** -- errors are silent (planned fix)
-- **Silent exception in automated_login()** -- `except Exception: pass` hides errors (planned fix)
+- **Logging to ~/.icici-mcp.log** (rotating, 5MB, 3 backups)
+- **Trade audit log at ~/.trading-audit.log** (JSON lines, chmod 600)
+- **Rate limit retry with exponential backoff on _breeze()**
 
 ## Known Issues with Scheduled Tasks
 
@@ -225,7 +226,4 @@ Prompts saved at: `~/trading-agent-prompt.md`
 - IPO application tools
 - Portfolio analytics / diversification tool
 - Multi-account support
-- Order validation (quantity, price, product checks)
-- Logging to ~/.icici-mcp.log
-- Trade audit log
 - Replace ThreadPoolExecutor with nest_asyncio for cleaner async handling
