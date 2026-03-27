@@ -1,13 +1,17 @@
 """ICICI Direct MCP Server — exposes Breeze Connect as tools for AI assistants."""
 
 import json
+import os
+import time
 from datetime import datetime, timedelta
+from functools import wraps
+from pathlib import Path
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from icici_mcp.auth import get_authenticated_breeze, load_credentials
+from icici_mcp.auth import get_authenticated_breeze, load_credentials, logger
 
 mcp = FastMCP("icici")
 
@@ -16,7 +20,49 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldH
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
+AUDIT_LOG = Path.home() / ".trading-audit.log"
 
+
+def retry_on_rate_limit(max_retries=3, backoff_base=2):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if any(term in err_str for term in ["rate", "throttl", "429", "too many"]):
+                        if attempt == max_retries:
+                            logger.error(f"Rate limit exceeded after {max_retries} retries: {e}")
+                            raise
+                        wait = backoff_base ** attempt
+                        logger.warning(f"Rate limited, retry {attempt+1}/{max_retries} in {wait}s")
+                        time.sleep(wait)
+                    else:
+                        raise
+        return wrapper
+    return decorator
+
+
+def _log_trade(action, details, result=None):
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "broker": "icici_direct",
+        "action": action,
+        **details,
+    }
+    if result:
+        entry["result"] = result
+    with open(AUDIT_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    try:
+        os.chmod(AUDIT_LOG, 0o600)
+    except OSError:
+        pass
+
+
+@retry_on_rate_limit()
 def _breeze():
     """Return an authenticated BreezeConnect instance."""
     creds = load_credentials()
@@ -31,21 +77,26 @@ def _iso_date(date_str: str) -> str:
 
 
 def _today_iso() -> str:
+    """Return today's date in ISO8601 format with a 06:00 UTC timestamp for Breeze API."""
     return datetime.now().strftime("%Y-%m-%dT06:00:00.000Z")
 
 
 def _past_iso(days: int = 30) -> str:
+    """Return a past date (default 30 days ago) in ISO8601 format for Breeze API."""
     return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT06:00:00.000Z")
 
 
 @mcp.tool(annotations=WRITE)
 def icici_login() -> str:
     """Authenticate with ICICI Direct. Auto-logs in with TOTP if available, or uses manual session token. Call this if other tools fail with auth errors."""
+    logger.info("Tool called: icici_login")
     creds = load_credentials()
     try:
         get_authenticated_breeze(creds)
+        logger.info("icici_login succeeded")
         return "Login successful. Session token cached for today."
     except RuntimeError as e:
+        logger.error("icici_login failed: %s", e)
         return f"Login failed: {e}"
 
 
@@ -54,6 +105,7 @@ def get_holdings(
     exchange_code: Annotated[str, "Exchange: NSE or NFO. Default: NSE"] = "NSE",
 ) -> str:
     """Get portfolio holdings with quantity, average price, current price, and P&L."""
+    logger.info("Tool called: get_holdings exchange=%s", exchange_code)
     breeze = _breeze()
     result = breeze.get_portfolio_holdings(
         exchange_code=exchange_code,
@@ -68,6 +120,7 @@ def get_holdings(
 @mcp.tool(annotations=READ_ONLY)
 def get_demat_holdings() -> str:
     """Get demat holdings (all shares held in your demat account)."""
+    logger.info("Tool called: get_demat_holdings")
     breeze = _breeze()
     result = breeze.get_demat_holdings()
     return json.dumps(result, indent=2, default=str)
@@ -76,6 +129,7 @@ def get_demat_holdings() -> str:
 @mcp.tool(annotations=READ_ONLY)
 def get_positions() -> str:
     """Get current day's open positions."""
+    logger.info("Tool called: get_positions")
     breeze = _breeze()
     result = breeze.get_portfolio_positions()
     return json.dumps(result, indent=2, default=str)
@@ -88,6 +142,7 @@ def get_orders(
     to_date: Annotated[str, "End date in YYYY-MM-DD format. Default: today"] = "",
 ) -> str:
     """Get order list for the specified date range."""
+    logger.info("Tool called: get_orders exchange=%s", exchange_code)
     breeze = _breeze()
     result = breeze.get_order_list(
         exchange_code=exchange_code,
@@ -102,6 +157,7 @@ def get_margins(
     exchange_code: Annotated[str, "Exchange: NSE or NFO. Default: NSE"] = "NSE",
 ) -> str:
     """Get available margins for trading."""
+    logger.info("Tool called: get_margins exchange=%s", exchange_code)
     breeze = _breeze()
     result = breeze.get_margin(exchange_code=exchange_code)
     return json.dumps(result, indent=2, default=str)
@@ -110,6 +166,7 @@ def get_margins(
 @mcp.tool(annotations=READ_ONLY)
 def get_funds() -> str:
     """Get available funds in your trading account."""
+    logger.info("Tool called: get_funds")
     breeze = _breeze()
     result = breeze.get_funds()
     return json.dumps(result, indent=2, default=str)
@@ -125,6 +182,7 @@ def get_quote(
     strike_price: Annotated[str, "Strike price for options. Use '' for equity/futures."] = "",
 ) -> str:
     """Get live market quote for a stock or derivative."""
+    logger.info("Tool called: get_quote stock=%s exchange=%s", stock_code, exchange_code)
     breeze = _breeze()
     result = breeze.get_quotes(
         stock_code=stock_code,
@@ -150,6 +208,7 @@ def get_historical_data(
     strike_price: Annotated[str, "Strike price for options. Empty for equity/futures."] = "",
 ) -> str:
     """Get historical OHLCV candle data for a stock or derivative."""
+    logger.info("Tool called: get_historical_data stock=%s interval=%s", stock_code, interval)
     breeze = _breeze()
     result = breeze.get_historical_data_v2(
         interval=interval,
@@ -173,6 +232,7 @@ def get_option_chain(
     product_type: Annotated[str, "Product type: options"] = "options",
 ) -> str:
     """Get option chain quotes for a stock or index."""
+    logger.info("Tool called: get_option_chain stock=%s exchange=%s", stock_code, exchange_code)
     breeze = _breeze()
     result = breeze.get_option_chain_quotes(
         stock_code=stock_code,
@@ -200,6 +260,7 @@ def place_order(
     disclosed_quantity: Annotated[str, "Disclosed quantity. Use '0' for full disclosure."] = "0",
 ) -> str:
     """Place a buy or sell order. Returns order details on success."""
+    logger.info("Tool called: place_order stock=%s action=%s qty=%s", stock_code, action, quantity)
     # Input validation
     if quantity <= 0:
         return json.dumps({"Status": 400, "Error": "Quantity must be greater than 0"})
@@ -221,6 +282,12 @@ def place_order(
     if validity.lower() not in ("day", "ioc"):
         return json.dumps({"Status": 400, "Error": f"Invalid validity: {validity}. Must be day or ioc"})
 
+    trade_details = {
+        "stock_code": stock_code, "exchange_code": exchange_code, "product": product,
+        "action": action.lower(), "order_type": order_type.lower(),
+        "quantity": quantity, "price": price,
+    }
+    _log_trade("place_order", trade_details)
     breeze = _breeze()
     result = breeze.place_order(
         stock_code=stock_code,
@@ -238,6 +305,7 @@ def place_order(
         right=right,
         strike_price=strike_price,
     )
+    _log_trade("place_order_result", trade_details, result=result)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -253,6 +321,12 @@ def modify_order(
     disclosed_quantity: Annotated[str, "Disclosed quantity. Use '0' for full disclosure."] = "0",
 ) -> str:
     """Modify a pending order."""
+    logger.info("Tool called: modify_order order_id=%s qty=%s price=%s", order_id, quantity, price)
+    trade_details = {
+        "order_id": order_id, "exchange_code": exchange_code,
+        "quantity": quantity, "price": price, "order_type": order_type,
+    }
+    _log_trade("modify_order", trade_details)
     breeze = _breeze()
     result = breeze.modify_order(
         order_id=order_id,
@@ -265,6 +339,7 @@ def modify_order(
         disclosed_quantity=disclosed_quantity,
         validity_date=_today_iso(),
     )
+    _log_trade("modify_order_result", trade_details, result=result)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -274,11 +349,15 @@ def cancel_order(
     order_id: Annotated[str, "Order ID to cancel"],
 ) -> str:
     """Cancel a pending order."""
+    logger.info("Tool called: cancel_order order_id=%s exchange=%s", order_id, exchange_code)
+    trade_details = {"order_id": order_id, "exchange_code": exchange_code}
+    _log_trade("cancel_order", trade_details)
     breeze = _breeze()
     result = breeze.cancel_order(
         exchange_code=exchange_code,
         order_id=order_id,
     )
+    _log_trade("cancel_order_result", trade_details, result=result)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -296,6 +375,12 @@ def square_off(
     order_type: Annotated[str, "limit or market"] = "market",
 ) -> str:
     """Square off an open position."""
+    logger.info("Tool called: square_off stock=%s action=%s qty=%s", stock_code, action, quantity)
+    trade_details = {
+        "stock_code": stock_code, "exchange_code": exchange_code,
+        "action": action, "quantity": quantity, "product": product,
+    }
+    _log_trade("square_off", trade_details)
     breeze = _breeze()
     result = breeze.square_off(
         exchange_code=exchange_code,
@@ -312,6 +397,7 @@ def square_off(
         right=right,
         strike_price=strike_price,
     )
+    _log_trade("square_off_result", trade_details, result=result)
     return json.dumps(result, indent=2, default=str)
 
 

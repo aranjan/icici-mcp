@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import webbrowser
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -13,6 +15,21 @@ import pyotp
 from breeze_connect import BreezeConnect
 
 TOKEN_FILE = Path.home() / ".icici_direct_token.json"
+
+
+def _setup_logger():
+    logger = logging.getLogger("icici_mcp")
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            Path.home() / ".icici-mcp.log", maxBytes=5*1024*1024, backupCount=3
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+    return logger
+
+
+logger = _setup_logger()
 
 
 def load_credentials() -> dict:
@@ -37,6 +54,7 @@ def load_credentials() -> dict:
         creds[key] = val or ""
 
     if missing:
+        logger.error("Missing required environment variables: %s", ", ".join(missing))
         print(
             f"Error: Missing required environment variables: {', '.join(missing)}\n"
             "Set them in your shell or in your MCP client's env config.",
@@ -46,6 +64,7 @@ def load_credentials() -> dict:
 
     creds["totp_secret"] = os.environ.get("ICICI_TOTP_SECRET")
     creds["session_token"] = os.environ.get("ICICI_SESSION_TOKEN")
+    logger.debug("Credentials loaded for user_id=%s", creds["user_id"])
     return creds
 
 
@@ -54,7 +73,9 @@ def get_cached_token() -> str | None:
     if TOKEN_FILE.exists():
         data = json.loads(TOKEN_FILE.read_text())
         if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+            logger.debug("Using cached session token from %s", data["date"])
             return data["session_token"]
+        logger.debug("Cached token expired (date=%s)", data.get("date"))
     return None
 
 
@@ -82,6 +103,7 @@ def save_session_token(session_token: str) -> None:
         )
     )
     os.chmod(TOKEN_FILE, 0o600)
+    logger.info("Session token cached to %s", TOKEN_FILE)
 
 
 def automated_login(
@@ -99,10 +121,13 @@ def automated_login(
     Returns the session_token and saves it to TOKEN_FILE.
     """
 
+    logger.info("Starting automated login for user_id=%s", user_id)
+
     async def _login() -> str:
         try:
             from playwright.async_api import async_playwright
         except ImportError as e:
+            logger.error("Playwright not installed: %s", e)
             raise RuntimeError(
                 "Playwright is not installed. Run: pip install playwright && playwright install chromium"
             ) from e
@@ -113,6 +138,7 @@ def automated_login(
 
         try:
             async with async_playwright() as p:
+                logger.debug("Launching headless Chromium via Playwright")
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
 
@@ -127,6 +153,7 @@ def automated_login(
                             token = params.get("apisession", [None])[0]
                             if token:
                                 apisession = token
+                                logger.info("Captured apisession token from redirect")
                     except Exception:
                         pass  # Don't crash on request parsing errors
 
@@ -138,6 +165,7 @@ def automated_login(
                 # Step 2: Fill credentials
                 uid_field = await page.query_selector("#txtuid")
                 if not uid_field:
+                    logger.error("Login page structure changed: #txtuid not found")
                     raise RuntimeError(
                         "Login page structure changed — #txtuid field not found. "
                         "ICICI Direct may have updated their login page."
@@ -152,6 +180,7 @@ def automated_login(
 
                 # Step 4: Enter TOTP
                 totp_code = pyotp.TOTP(totp_secret).now()
+                logger.debug("Generated TOTP code for submission")
                 otp_inputs = await page.query_selector_all("input[tg-nm=otp]")
 
                 if not otp_inputs:
@@ -159,6 +188,7 @@ def automated_login(
                     error_el = await page.query_selector(".text-danger, #errmsg, .error")
                     if error_el:
                         error_text = await error_el.inner_text()
+                        logger.error("Login failed with error: %s", error_text.strip())
                         raise RuntimeError(f"Login failed: {error_text.strip()}")
                     raise RuntimeError(
                         "OTP input fields not found after login. "
@@ -189,6 +219,7 @@ def automated_login(
         except RuntimeError:
             raise  # Re-raise our own errors
         except Exception as e:
+            logger.error("Automated login failed: %s: %s", type(e).__name__, e)
             raise RuntimeError(
                 f"Automated login failed: {type(e).__name__}: {e}\n"
                 "Possible causes:\n"
@@ -205,6 +236,7 @@ def automated_login(
                     pass
 
         if not apisession:
+            logger.error("Could not extract apisession after login completed")
             raise RuntimeError(
                 "Could not extract apisession after login completed. "
                 "The redirect URL may not contain the token. "
@@ -242,6 +274,7 @@ def get_authenticated_breeze(creds: dict) -> BreezeConnect:
     3. Auto-login with TOTP via headless browser (if ICICI_TOTP_SECRET set)
     4. Error with instructions
     """
+    logger.info("Authenticating with ICICI Direct for user_id=%s", creds["user_id"])
     breeze = BreezeConnect(api_key=creds["api_key"])
 
     # Try cached token first — validate it actually works
@@ -253,9 +286,11 @@ def get_authenticated_breeze(creds: dict) -> BreezeConnect:
             )
             # Validate with a lightweight call
             breeze.get_customer_details()
+            logger.info("Authenticated using cached token")
             return breeze
-        except Exception:
+        except Exception as e:
             # Cached token is invalid/expired — fall through to other methods
+            logger.warning("Cached token invalid: %s", e)
             print("Cached ICICI token expired, attempting re-login...", file=sys.stderr)
             breeze = BreezeConnect(api_key=creds["api_key"])
 
@@ -268,13 +303,16 @@ def get_authenticated_breeze(creds: dict) -> BreezeConnect:
             )
             breeze.get_customer_details()
             save_session_token(creds["session_token"])
+            logger.info("Authenticated using manual session token")
             return breeze
-        except Exception:
+        except Exception as e:
+            logger.warning("Manual session token invalid: %s", e)
             print("Manual session token expired, attempting auto-login...", file=sys.stderr)
             breeze = BreezeConnect(api_key=creds["api_key"])
 
     # Try auto-login with TOTP via headless browser
     if creds["totp_secret"]:
+        logger.info("Attempting auto-login via Playwright with TOTP")
         session_token = automated_login(
             creds["api_key"],
             creds["api_secret"],
@@ -288,6 +326,7 @@ def get_authenticated_breeze(creds: dict) -> BreezeConnect:
         return breeze
 
     # No valid token available
+    logger.error("No valid session token and no TOTP secret for auto-login")
     login_url = get_login_url(creds["api_key"])
     raise RuntimeError(
         "No valid session token. To fix this, either:\n"
